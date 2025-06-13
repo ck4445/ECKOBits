@@ -1,1 +1,72 @@
-# ECKOBits-
+# ECKOBits Server
+
+ECKOBits is an automated virtual economy for Scratch projects built with the `scratchattach` library. It listens for cloud requests and comment commands to manage balances, subscriptions, and company accounts.
+
+**Current version:** 0.6.5
+
+## Features
+
+- User balances and transaction history
+- Recurring payments with daily, weekly, or monthly cycles
+- Company accounts with multiple authorized members
+- Leaderboard generation and notifications
+- Notification history capped at 100 entries per user
+- Automated backups every 10 minutes
+
+## Setup
+
+1. *(Optional)* create and activate a virtual environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Place your Scratch session ID in `secrets/session_id.txt`.
+4. Start the server:
+   ```bash
+   python3 main.py
+   ```
+
+## Usage
+
+### Comment Commands
+Commands can be posted directly in the Scratch project comments. The `!` prefix is accepted for compatibility.
+
+- `s <user> <amount>` – send bits to another user
+- `sub <user> <amount> <daily|weekly|monthly>` – subscribe to pay a user periodically
+- `can <user>` – cancel a subscription to the specified user
+- `canall` – cancel all active subscriptions
+- `found <initial_amount>` – create a company named `<username> company`
+- `add <company_name> <username>` – authorize a member to manage your company
+- `sendco <company_name> <recipient> <amount>` – send bits from a company account
+
+### Cloud Requests
+
+- `balance` – retrieve your balance and ensure you have an account
+- `get_preferences` / `set_preferences` – manage user preferences
+- `give` – send bits to another user
+- `search` – view another user's balance
+- `leaderboard` – list the top balances
+- `notifications` – fetch your notifications
+- Older notifications are discarded when new ones exceed the limit
+
+### Backups
+
+The server keeps the latest ten backups in the `backups/` directory, saving every ten minutes automatically.
+
+## Roadmap
+
+Planned improvements for future releases:
+
+- Better administration tools
+- Web dashboard for viewing balances and statistics
+- More robust logging and error handling
+- Localization support
+- Enhanced security for cloud interactions
+
+## Acknowledgements
+
+This project uses the open-source `scratchattach` library. Development has been refined with help from **OpenAI Codex**, which improved parts of the codebase and documentation.
