@@ -10,8 +10,8 @@ ECKOBits is an automated virtual economy for Scratch projects built with the `sc
 - Recurring payments with daily, weekly, or monthly cycles
 - Company accounts with multiple authorized members
 - Leaderboard generation and notifications
-- Notification history capped at 100 entries per user
 - Automated backups every 10 minutes
+- Automatic remote GitHub backups retaining the latest 20 snapshots
 
 ## Setup
 
@@ -51,11 +51,12 @@ Commands can be posted directly in the Scratch project comments. The `!` prefix 
 - `search` – view another user's balance
 - `leaderboard` – list the top balances
 - `notifications` – fetch your notifications
-- Older notifications are discarded when new ones exceed the limit
 
 ### Backups
 
 The server keeps the latest ten backups in the `backups/` directory, saving every ten minutes automatically.
+Backups are also pushed to the remote GitHub repository defined in `data.py`.
+Only new changes are committed and the remote retains the most recent 20 backups.
 
 ## Roadmap
 

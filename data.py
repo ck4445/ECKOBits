@@ -5,6 +5,7 @@ from datetime import datetime
 from filelock import FileLock
 import shutil
 import threading
+import subprocess
 
 # Helper to ensure a directory exists
 
@@ -17,6 +18,10 @@ DATA_DIR = "db_files"
 BACKUP_DIR = "backups"
 ensure_dir(DATA_DIR)
 ensure_dir(BACKUP_DIR)
+# Hardcoded repository for remote backups
+REMOTE_BACKUP_REPO = "https://github.com/ck4445/eckobits-backups.git"
+REMOTE_BACKUP_DIR = "remote_backups"
+ensure_dir(REMOTE_BACKUP_DIR)
 BALANCE_FILE = os.path.join(DATA_DIR, "balances.txt")
 NOTIFS_DIR = os.path.join(DATA_DIR, "notifications")
 PREFS_DIR = os.path.join(DATA_DIR, "preferences")
@@ -28,7 +33,21 @@ COMPANIES_FILE = os.path.join(DATA_DIR, "companies.txt")
 for subdir in [NOTIFS_DIR, PREFS_DIR]:
     ensure_dir(subdir)
 
-MAX_NOTIFICATIONS_PER_USER = 100
+# --- Git helper functions for remote backups
+def _run_git(cmd_list, cwd):
+    try:
+        subprocess.check_call(["git"] + cmd_list, cwd=cwd)
+    except Exception as e:
+        print(f"Git command failed: {e}")
+
+
+def _repo_has_changes(cwd):
+    try:
+        out = subprocess.check_output(["git", "status", "--porcelain"], cwd=cwd)
+        return bool(out.strip())
+    except Exception:
+        return False
+
 # --- Sanitize name, block all problematic characters
 
 def fix_name(name: str) -> str:
@@ -101,22 +120,14 @@ def get_notifications(user):
             return [line.strip() for line in f.readlines() if line.strip()]
 
 
-
 def add_notification(user, message):
     user = fix_name(user)
     notif_file = _notifs_file(user)
     lockfile = notif_file + ".lock"
     with FileLock(lockfile):
-        entries = []
-        if os.path.exists(notif_file):
-            with open(notif_file, "r") as f:
-                entries = [line.strip() for line in f.readlines() if line.strip()]
-        entries.append(message)
-        if len(entries) > MAX_NOTIFICATIONS_PER_USER:
-            entries = entries[-MAX_NOTIFICATIONS_PER_USER:]
-        with open(notif_file, "w") as f:
-            for line in entries:
-                f.write(line + "\n")
+        with open(notif_file, "a") as f:
+            f.write(message + "\n")
+
 
 def clear_notifications(user):
     user = fix_name(user)
@@ -412,7 +423,38 @@ def generate_readable_timestamp():
 
 # --- Backup helper ---
 
-def backup_every_n_minutes(n=10, max_backups=10):
+def _sync_remote_backup(local_folder, timestamp, max_backups=20):
+    repo_dir = REMOTE_BACKUP_DIR
+    git_dir = os.path.join(repo_dir, '.git')
+    if not os.path.exists(git_dir):
+        _run_git(['clone', REMOTE_BACKUP_REPO, repo_dir], cwd='.')
+    else:
+        _run_git(['-C', repo_dir, 'pull'], cwd='.')
+
+    gitignore_path = os.path.join(repo_dir, '.gitignore')
+    if not os.path.exists(gitignore_path):
+        with open(gitignore_path, 'w') as gi:
+            gi.write('secrets/\n')
+
+    dest = os.path.join(repo_dir, os.path.basename(local_folder))
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+    shutil.copytree(local_folder, dest)
+
+    backups = sorted([d for d in os.listdir(repo_dir) if os.path.isdir(os.path.join(repo_dir, d)) and d != '.git'])
+    if len(backups) > max_backups:
+        for old in backups[:-max_backups]:
+            old_path = os.path.join(repo_dir, old)
+            shutil.rmtree(old_path)
+            _run_git(['-C', repo_dir, 'rm', '-r', old], cwd='.')
+
+    if _repo_has_changes(repo_dir):
+        _run_git(['-C', repo_dir, 'add', '.'], cwd='.')
+        _run_git(['-C', repo_dir, 'commit', '-m', f'Backup {timestamp}'], cwd='.')
+        _run_git(['-C', repo_dir, 'push'], cwd='.')
+
+
+def backup_every_n_minutes(n=10, max_backups=10, remote_max_backups=20):
     def backup_func():
         while True:
             try:
@@ -441,6 +483,7 @@ def backup_every_n_minutes(n=10, max_backups=10):
                                 os.remove(fullpath)
                         except Exception as e:
                             print(f"Error deleting old backup {fullpath}: {e}")
+                _sync_remote_backup(dest_folder, timestamp, remote_max_backups)
                 print(f"Backup completed at {timestamp}")
             except Exception as e:
                 print(f"Backup failed: {e}")
