@@ -19,7 +19,7 @@ BACKUP_DIR = "backups"
 ensure_dir(DATA_DIR)
 ensure_dir(BACKUP_DIR)
 # Hardcoded repository for remote backups
-REMOTE_BACKUP_REPO = "https://github.com/ck4445/eckobits-backups.git"
+REMOTE_BACKUP_REPO = "https://github.com/ck4445/EBBackups.git"
 REMOTE_BACKUP_DIR = "remote_backups"
 ensure_dir(REMOTE_BACKUP_DIR)
 BALANCE_FILE = os.path.join(DATA_DIR, "balances.txt")
