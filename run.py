@@ -15,13 +15,17 @@ def run_command(cmd):
 
 
 def ensure_repo(script_dir):
+    """Clone the repo if needed and ensure pulls succeed."""
     if os.path.isdir(os.path.join(script_dir, '.git')):
-        return script_dir
-    repo_dir = os.path.join(script_dir, 'ECKOBits')
-    if not os.path.isdir(repo_dir):
-        run_command(['git', 'clone', REPO_URL, repo_dir])
+        repo_dir = script_dir
     else:
-        run_command(['git', '-C', repo_dir, 'pull'])
+        repo_dir = os.path.join(script_dir, 'ECKOBits')
+        if not os.path.isdir(repo_dir):
+            run_command(['git', 'clone', REPO_URL, repo_dir])
+
+    # Configure pull behavior to avoid divergence errors and update the repo
+    run_command(['git', '-C', repo_dir, 'config', 'pull.rebase', 'false'])
+    run_command(['git', '-C', repo_dir, 'pull'])
     return repo_dir
 
 
