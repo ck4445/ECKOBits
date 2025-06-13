@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 
-REPO_URL = "https://github.com/ck4445/ECKOBits.git"
+REPO_URL = "https://github.com/ck4445/ECKOBits-.git"
 
 
 def run_command(cmd):
