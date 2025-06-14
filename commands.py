@@ -1,6 +1,10 @@
 from datetime import timedelta
 import time
-import data
+import data # data.check_rate_limits, data.record_api_call, data.add_notification, data.generate_readable_timestamp
+import google.generativeai as genai
+# Using genai.types directly is often cleaner if 'types' is not extensively used standalone.
+# from google.generativeai import types # Original
+import gemini_config
 
 # Cycle times for subscriptions
 CYCLE_TIMES = {
@@ -208,11 +212,44 @@ def comment_listener_thread(project):
                         continue
                     first_word = command_parts[0].lower()
                     clean_word = first_word.lstrip("!")
-                    if clean_word in ["s", "sub", "can", "canall", "found", "add", "sendco"]:
-                        print(f"Found command '{content}' from {author} (ID: {comment.id})")
+                    clean_word = first_word.lstrip("!")
+                    # Updated list of known commands for direct processing
+                    known_direct_commands = ["s", "sub", "can", "canall", "found", "add", "sendco"]
+
+                    if clean_word in known_direct_commands:
+                        print(f"Found direct command '{content}' from {author} (ID: {comment.id})")
+                        # command_parts already includes the command with '!' (e.g., ['!s', 'user', '10'])
+                        # or without '!' if lstrip removed it and it was just 's'.
+                        # process_comment_command expects '!command' as first part.
+                        # Ensure first part has '!' if it was stripped by clean_word logic.
+                        # Original command_parts[0] is like '!s' or 's'.
+                        # process_comment_command internally lstrips '!' again.
+                        # So, it's robust to either ['!s', 'user', '10'] or ['s', 'user', '10'] if first_word was 's'.
+                        # However, our clean_word logic means command_parts[0] might be just 's'.
+                        # Let's ensure process_comment_command receives it as it expects.
+                        # The original `command_parts` is `['!s', 'user', '10']`.
+                        # `process_comment_command` does `command_parts[0].lower().lstrip("!")`.
+                        # So, passing `command_parts` directly is correct.
                         process_comment_command(author, command_parts)
                         data.add_processed_comment(comment.id)
+                    elif clean_word == "n":
+                        if len(command_parts) > 1: # e.g., ['!n', 'send', '10', 'to', 'user']
+                            natural_input = " ".join(command_parts[1:])
+                            print(f"Found natural language command '!n {natural_input}' from {author} (ID: {comment.id})")
+                            process_natural_language_command(author, natural_input)
+                            data.add_processed_comment(comment.id)
+                        else: # Malformed !n command, e.g., just ['!n']
+                            ts = data.generate_readable_timestamp()
+                            # Ensure author's name is fixed for notification consistency
+                            data.add_notification(data.fix_name(author), f"{ts} - Invalid !n command format. Use: !n [your natural language instruction].")
+                            data.add_processed_comment(comment.id) # Mark as processed to avoid retrying
                     else:
+                        # If it's not a known direct command and not '!n',
+                        # and it started with '!', it's an unknown command.
+                        # Otherwise, it's just a regular comment not intended for the bot.
+                        if first_word.startswith("!"):
+                             print(f"Unknown command '{content}' from {author} (ID: {comment.id}). Marked as processed.")
+                        # Always mark as processed to prevent re-evaluation in next cycle.
                         data.add_processed_comment(comment.id)
         except Exception as e:
             print(f"Error in comment listener: {e}")
@@ -257,3 +294,149 @@ def subscription_processor_thread():
         except Exception as e:
             print(f"Error in subscription processor: {e}")
         time.sleep(60)
+
+
+def get_gemini_command_response(natural_language_input: str, model_name: str, api_key: str) -> str | None:
+    """
+    Gets a command response from the Gemini API based on natural language input.
+
+    Args:
+        natural_language_input: The user's input in natural language.
+        model_name: The name of the Gemini model to use.
+        api_key: The Gemini API key.
+
+    Returns:
+        The command string from Gemini, or None if an error occurs or no command is found.
+    """
+    try:
+        # Ensure API key is configured for each call, as genai might be used by other parts or configured differently elsewhere.
+        genai.configure(api_key=api_key, transport='rest')
+
+        model_with_system_instruction = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=gemini_config.SYSTEM_INSTRUCTION
+        )
+
+        generation_config_obj = genai.types.GenerationConfig(
+            candidate_count=1
+        )
+
+        response = model_with_system_instruction.generate_content(
+            contents=[natural_language_input],
+            generation_config=generation_config_obj
+        )
+
+        if response.candidates:
+            candidate = response.candidates[0]
+            if candidate.content and candidate.content.parts:
+                response_text = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text'))
+                if response_text:
+                    return response_text.strip()
+                else:
+                    finish_reason_enum = genai.types.Candidate.FinishReason
+                    if candidate.finish_reason != finish_reason_enum.STOP:
+                         print(f"Warning: Gemini response candidate for {model_name} finished due to: {candidate.finish_reason.name}")
+                    else:
+                         print(f"Warning: Gemini response candidate for {model_name} has part but no text, finish_reason: {candidate.finish_reason.name}.")
+                    return None
+            elif hasattr(response, 'text') and response.text: # Fallback
+                 return response.text.strip()
+            else:
+                print(f"Warning: Gemini response for {model_name} has candidates but no parsable text content.")
+                return None
+        else:
+            if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
+                print(f"Warning: Gemini API request for {model_name} was blocked. Reason: {response.prompt_feedback.block_reason.name}")
+            else:
+                print(f"Warning: Gemini response for {model_name} has no candidates.")
+            return None
+
+    except genai.types.BlockedPromptException as e:
+        print(f"Gemini API request for {model_name} blocked due to prompt: {e}")
+        return None
+    except genai.core.exceptions.PermissionDenied as e: # Specific exception for permission issues
+        print(f"Gemini API request for {model_name} failed due to permission denied (check API key and access to model): {e}")
+        return None
+    except genai.core.exceptions.GoogleAPIError as e:
+        print(f"Error interacting with Gemini API ({model_name}): {e}")
+        return None
+    except Exception as e: # Catch any other unexpected errors
+        print(f"Generic error during Gemini API call for {model_name}: {e}")
+        return None
+
+
+def process_natural_language_command(comment_author: str, natural_language_input: str):
+    """
+    Processes a natural language command by trying available Gemini models.
+    """
+    author_name_fixed = data.fix_name(comment_author) # Use fixed name for rate limiting and notifications
+
+    for model_config in gemini_config.get_model_configs():
+        model_name = model_config['name']
+
+        can_use_model = data.check_rate_limits(author_name_fixed, model_name)
+
+        if can_use_model:
+            print(f"Attempting to use model: {model_name} for user {author_name_fixed} for input: '{natural_language_input}'")
+            # Ensure GEMINI_API_KEY is correctly passed; it's defined in gemini_config
+            gemini_response_text = get_gemini_command_response(natural_language_input, model_name, gemini_config.GEMINI_API_KEY)
+
+            if gemini_response_text is not None and gemini_response_text.strip():
+                data.record_api_call(author_name_fixed, model_name)
+                potential_commands = gemini_response_text.strip().split('\n')
+
+                if not potential_commands or not potential_commands[0].strip():
+                    ts = data.generate_readable_timestamp()
+                    data.add_notification(author_name_fixed, f"{ts} - Your natural language command was processed by {model_name} but resulted in no specific action.")
+                    print(f"User {author_name_fixed}, model {model_name}: NL command processed, no action from AI output '{gemini_response_text}'.")
+                    return # Successfully processed by AI, but no command output.
+
+                executed_at_least_one = False
+                known_commands = ["s", "sub", "can", "canall", "found", "add", "sendco"]
+
+                for cmd_line in potential_commands:
+                    cmd_line = cmd_line.strip()
+                    if cmd_line:
+                        gemini_command_parts = cmd_line.split(" ")
+                        if not gemini_command_parts: continue
+
+                        actual_command_keyword = gemini_command_parts[0].lower()
+
+                        if actual_command_keyword in known_commands:
+                            print(f"User {author_name_fixed}, model {model_name}: Executing AI generated command: !{actual_command_keyword} {' '.join(gemini_command_parts[1:])}")
+                            # process_comment_command expects the author name and the full command parts list
+                            # where the first part is the command including "!"
+                            process_comment_command(comment_author, [f"!{actual_command_keyword}"] + gemini_command_parts[1:])
+                            executed_at_least_one = True
+                        else:
+                            ts = data.generate_readable_timestamp()
+                            error_msg = f"{ts} - Skipped unknown command from AI ({model_name}): '{cmd_line}'."
+                            print(error_msg) # Also print to server log for debugging
+                            data.add_notification(author_name_fixed, error_msg)
+
+                if executed_at_least_one:
+                    # Optionally, notify user that command from AI was run
+                    # ts = data.generate_readable_timestamp()
+                    # data.add_notification(author_name_fixed, f"{ts} - Your natural language command was successfully executed by {model_name}.")
+                    return # Stop trying other models if commands were processed
+                elif not executed_at_least_one and potential_commands and potential_commands[0].strip():
+                    # AI returned something, but it wasn't a runnable command (e.g. just text, or unknown command)
+                    ts = data.generate_readable_timestamp()
+                    msg = f"{ts} - AI ({model_name}) processed your request but didn't return a recognized command. AI Output: '{gemini_response_text}'"
+                    data.add_notification(author_name_fixed, msg)
+                    print(f"User {author_name_fixed}, model {model_name}: AI output not a recognized command: '{gemini_response_text}'.")
+                    return # Handled by this model, even if not runnable.
+            else: # Gemini returned None or empty string
+                print(f"Model {model_name} returned no valid response or an empty response for user {author_name_fixed}. Response: '{gemini_response_text}'")
+                # Optionally notify user model failed, or just try next model silently
+                # ts = data.generate_readable_timestamp()
+                # data.add_notification(author_name_fixed, f"{ts} - Model {model_name} could not process your request at this time.")
+                # Continue to the next model (fallback)
+        else:
+            print(f"Rate limit check failed for user {author_name_fixed}, model {model_name}.")
+
+    # If loop finishes, all models failed or were rate-limited
+    ts = data.generate_readable_timestamp()
+    final_msg = f"{ts} - Sorry, your natural language command could not be processed at this time. All models are currently unavailable or rate-limited."
+    data.add_notification(author_name_fixed, final_msg)
+    print(f"User {author_name_fixed}: All models failed or rate-limited for NL command: '{natural_language_input}'.")

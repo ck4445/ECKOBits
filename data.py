@@ -5,6 +5,7 @@ from datetime import datetime
 from filelock import FileLock
 import shutil
 import threading
+import json
 
 # Helper to ensure a directory exists
 
@@ -24,9 +25,16 @@ TRANSACTIONS_FILE = os.path.join(DATA_DIR, "transactions.txt")
 PROCESSED_COMMENTS_FILE = os.path.join(DATA_DIR, "processed_comments.txt")
 SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.txt")
 COMPANIES_FILE = os.path.join(DATA_DIR, "companies.txt")
+GEMINI_USER_API_USAGE_FILE = os.path.join(DATA_DIR, "gemini_user_api_usage.json")
+GEMINI_GLOBAL_API_USAGE_FILE = os.path.join(DATA_DIR, "gemini_global_api_usage.json")
+
 
 for subdir in [NOTIFS_DIR, PREFS_DIR]:
     ensure_dir(subdir)
+
+# --- Imports for Gemini Rate Limiting (add near other imports if organizing that way)
+from collections import defaultdict
+import gemini_config # Assuming gemini_config.py is in the same directory or Python path
 
 # --- Sanitize name, block all problematic characters
 
@@ -438,3 +446,177 @@ def backup_every_n_minutes(n=10, max_backups=10, remote_max_backups=20):
             time.sleep(n * 60)
     t = threading.Thread(target=backup_func, daemon=True)
     t.start()
+
+# --- Gemini API Rate Limiting Logic ---
+
+def _load_json_data(filepath, default_factory=dict):
+    """Helper to load JSON data from a file with locking."""
+    lockfile = filepath + ".lock"
+    with FileLock(lockfile):
+        if not os.path.exists(filepath):
+            return default_factory()
+        try:
+            with open(filepath, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError): # FileNotFoundError for race condition if file deleted after check
+            return default_factory()
+
+def _save_json_data(filepath, data_to_save):
+    """Helper to save JSON data to a file with locking."""
+    lockfile = filepath + ".lock"
+    tmp_file = filepath + ".tmp"
+    with FileLock(lockfile):
+        with open(tmp_file, "w") as f:
+            json.dump(data_to_save, f, indent=4)
+        os.replace(tmp_file, filepath)
+
+def _load_gemini_user_api_usage():
+    # Uses defaultdict to easily handle new users/models
+    data = _load_json_data(GEMINI_USER_API_USAGE_FILE, lambda: defaultdict(lambda: defaultdict(list)))
+    # Ensure inner structures are defaultdicts for loaded data too
+    # This conversion is a bit tricky as json load produces dicts.
+    # For simplicity, the functions using this will use .get() or check existence.
+    # A more robust way would be to recursively convert dicts to defaultdicts if needed.
+    return data
+
+
+def _save_gemini_user_api_usage(usage_data):
+    _save_json_data(GEMINI_USER_API_USAGE_FILE, usage_data)
+
+
+def _load_gemini_global_api_usage():
+    # Uses defaultdict for new models
+    data = _load_json_data(GEMINI_GLOBAL_API_USAGE_FILE, lambda: defaultdict(list))
+    return data
+
+def _save_gemini_global_api_usage(usage_data):
+    _save_json_data(GEMINI_GLOBAL_API_USAGE_FILE, usage_data)
+
+
+def record_api_call(username: str, model_name: str):
+    """Records an API call for rate limiting purposes."""
+    current_time = int(time.time())
+
+    # Global Usage
+    global_usage = _load_gemini_global_api_usage()
+    if model_name not in global_usage: # Should be handled by defaultdict, but explicit check is fine
+        global_usage[model_name] = []
+    global_usage[model_name].append(current_time)
+    _save_gemini_global_api_usage(global_usage)
+
+    # User-specific Usage
+    if model_name == gemini_config.MODEL_GEMINI_FLASH_PREVIEW:
+        user_usage = _load_gemini_user_api_usage()
+        # Ensure path exists for new user/model
+        if username not in user_usage:
+            user_usage[username] = defaultdict(list)
+        if model_name not in user_usage[username]: # defaultdict handles this
+            user_usage[username][model_name] = []
+        user_usage[username][model_name].append(current_time)
+        _save_gemini_user_api_usage(user_usage)
+
+
+def check_rate_limits(username: str, model_name: str) -> bool:
+    """Checks if an API call is within the defined rate limits."""
+    current_time = int(time.time())
+
+    limits = gemini_config.RATE_LIMITS.get(model_name)
+    if not limits:
+        print(f"Warning: No rate limits defined for model {model_name}. Denying call.")
+        return False # Or raise an error
+    user_hourly_limit, global_minute_limit, global_24_hour_limit = limits
+
+    # Load data
+    global_usage = _load_gemini_global_api_usage()
+
+    # --- Clean up old timestamps ---
+    # Global usage cleanup (older than 24 hours)
+    if model_name in global_usage:
+        global_usage[model_name] = [
+            t for t in global_usage[model_name] if current_time - t < 24 * 60 * 60
+        ]
+    # No need for 'else' global_usage[model_name]=[] as defaultdict handles it or it's already list
+
+    save_global_needed = True # Assume save is needed if we proceed
+
+    # User-specific usage cleanup & check (only for MODEL_GEMINI_FLASH_PREVIEW)
+    if model_name == gemini_config.MODEL_GEMINI_FLASH_PREVIEW:
+        user_usage = _load_gemini_user_api_usage()
+        save_user_needed = True # Assume save is needed
+
+        if username in user_usage and model_name in user_usage[username]:
+            user_usage[username][model_name] = [
+                t for t in user_usage[username][model_name] if current_time - t < 60 * 60
+            ]
+        # No need for 'else' init, defaultdict would handle, or .get below
+
+        user_calls_last_hour = len(user_usage.get(username, {}).get(model_name, []))
+        if user_calls_last_hour >= user_hourly_limit:
+            print(f"Debug: User {username} exceeded hourly limit for {model_name} ({user_calls_last_hour}/{user_hourly_limit}).")
+            _save_gemini_user_api_usage(user_usage) # Save cleaned data
+            _save_gemini_global_api_usage(global_usage) # Save potentially cleaned global data
+            return False
+        if save_user_needed: _save_gemini_user_api_usage(user_usage)
+
+
+    # --- Check Global Minute Limit ---
+    global_calls_last_minute = len([
+        t for t in global_usage.get(model_name, []) if current_time - t < 60
+    ])
+    if global_calls_last_minute >= global_minute_limit:
+        print(f"Debug: Global minute limit exceeded for {model_name} ({global_calls_last_minute}/{global_minute_limit}).")
+        if save_global_needed: _save_gemini_global_api_usage(global_usage)
+        return False
+
+    # --- Check Global 24 Hour Limit ---
+    # global_usage[model_name] is already filtered for 24h
+    global_calls_last_24_hours = len(global_usage.get(model_name, []))
+    if global_calls_last_24_hours >= global_24_hour_limit:
+        print(f"Debug: Global 24-hour limit exceeded for {model_name} ({global_calls_last_24_hours}/{global_24_hour_limit}).")
+        if save_global_needed: _save_gemini_global_api_usage(global_usage)
+        return False
+
+    if save_global_needed: _save_gemini_global_api_usage(global_usage) # Save cleaned data if all checks passed
+    return True
+
+
+def cleanup_old_api_usage_data(days_to_keep=30):
+    """Cleans up API usage data older than a specified number of days to prevent indefinite file growth."""
+    current_time = int(time.time())
+    cutoff_seconds = days_to_keep * 24 * 60 * 60
+
+    # Global cleanup
+    global_usage = _load_gemini_global_api_usage()
+    modified_global = False
+    for model_name, timestamps in list(global_usage.items()): # list() for safe iteration
+        original_len = len(timestamps)
+        global_usage[model_name] = [t for t in timestamps if current_time - t < cutoff_seconds]
+        if not global_usage[model_name]:
+            del global_usage[model_name]
+        if len(global_usage.get(model_name, [])) != original_len:
+            modified_global = True
+    if modified_global:
+        _save_gemini_global_api_usage(global_usage)
+
+    # User-specific cleanup
+    user_usage = _load_gemini_user_api_usage()
+    modified_user = False
+    for username, user_models in list(user_usage.items()):
+        for model_name, timestamps in list(user_models.items()):
+            original_len = len(timestamps)
+            user_usage[username][model_name] = [t for t in timestamps if current_time - t < cutoff_seconds]
+            if not user_usage[username][model_name]:
+                del user_usage[username][model_name]
+            if len(user_usage[username].get(model_name, [])) != original_len:
+                 modified_user = True
+        if not user_usage[username]: # If user has no models left
+            del user_usage[username]
+            modified_user = True # Ensure save if user entry is removed
+
+    if modified_user:
+        _save_gemini_user_api_usage(user_usage)
+
+    if modified_global or modified_user:
+        print(f"Old API usage data (older than {days_to_keep} days) cleaned up.")
+
+# --- End of Gemini API Rate Limiting Logic ---
