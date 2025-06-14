@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 
-
 def run_command(cmd):
     """Run a command and exit on failure."""
     try:
@@ -11,7 +10,19 @@ def run_command(cmd):
         print(f"Command failed: {exc}")
         sys.exit(1)
 
+def ensure_repo(script_dir):
+    """Clone the repo if needed and ensure pulls succeed."""
+    if os.path.isdir(os.path.join(script_dir, '.git')):
+        repo_dir = script_dir
+    else:
+        repo_dir = os.path.join(script_dir, 'ECKOBits')
+        if not os.path.isdir(repo_dir):
+            run_command(['git', 'clone', REPO_URL, repo_dir])
 
+    # Configure pull behavior to avoid divergence errors and update the repo
+    run_command(['git', '-C', repo_dir, 'config', 'pull.rebase', 'false'])
+    run_command(['git', '-C', repo_dir, 'pull'])
+    return repo_dir
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +32,6 @@ def main():
         run_command([sys.executable, '-m', 'pip', 'install', '-r', req_file])
 
     run_command([sys.executable, os.path.join(script_dir, 'main.py')])
-
 
 if __name__ == '__main__':
     main()
