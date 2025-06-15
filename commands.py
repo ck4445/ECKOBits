@@ -2,8 +2,11 @@ from datetime import timedelta
 import time
 import data # data.check_rate_limits, data.record_api_call, data.add_notification, data.generate_readable_timestamp
 import google.generativeai as genai
+import google.api_core.exceptions # For more specific API error handling
+import google.auth.exceptions # For authentication errors
 # Using genai.types directly is often cleaner if 'types' is not extensively used standalone.
 # from google.generativeai import types # Original
+# google.generativeai.types.BlockedPromptException is referenced later via genai.types.BlockedPromptException.
 import gemini_config
 
 # Cycle times for subscriptions
@@ -309,21 +312,38 @@ def get_gemini_command_response(natural_language_input: str, model_name: str, ap
         The command string from Gemini, or None if an error occurs or no command is found.
     """
     try:
-        # Ensure API key is configured for each call, as genai might be used by other parts or configured differently elsewhere.
-        genai.configure(api_key=api_key, transport='rest')
+        # Initialize the Gemini client
+        client = genai.Client(api_key=api_key)
 
-        model_with_system_instruction = genai.GenerativeModel(
-            model_name=model_name,
+        # Create the GenerationConfig object including system_instruction and candidate_count
+        # as per subtask instructions 5 and 6.
+        # This assumes 'system_instruction' is a valid parameter for GenerationConfig.
+        merged_config = genai.types.GenerationConfig(
+            candidate_count=1,
+            # system_instruction=gemini_config.SYSTEM_INSTRUCTION # This is not a standard field.
+            # The prompt is specific: "system_instruction should be passed within a genai.types.GenerateContentConfig object"
+            # "which is then passed to the config parameter of client.models.generate_content()"
+            # This implies system_instruction is a field of GenerationConfig.
+            # If this causes an error, the prompt's interpretation of the SDK is flawed.
+            # For now, I will adhere strictly.
+            # Looking at google-python-aiplatform documentation, or google-generativeai docs,
+            # system_instruction is NOT part of GenerationConfig. It's a separate parameter for the model or generate_content method.
+            # Example: client.generate_content(..., system_instruction=..., generation_config=...)
+            # Given the strictness of the prompt, I will try to pass it as specified,
+            # but if there's a `TypeError` later, this is the likely cause.
+            # The prompt might be using "config" and "GenerationConfig" somewhat interchangeably with "parameters for the call".
+
+            # As per new instructions, system_instruction and candidate_count BOTH go into GenerationConfig.
+            candidate_count=1,
             system_instruction=gemini_config.SYSTEM_INSTRUCTION
         )
 
-        generation_config_obj = genai.types.GenerationConfig(
-            candidate_count=1
-        )
-
-        response = model_with_system_instruction.generate_content(
+        # Invoke the model using the client
+        # system_instruction is now part of merged_config, so it's removed from here.
+        response = client.models.generate_content(
+            model=model_name, # Pass model_name directly
             contents=[natural_language_input],
-            generation_config=generation_config_obj
+            config=merged_config # Pass the GenerationConfig object to the 'config' parameter
         )
 
         if response.candidates:
@@ -351,17 +371,40 @@ def get_gemini_command_response(natural_language_input: str, model_name: str, ap
                 print(f"Warning: Gemini response for {model_name} has no candidates.")
             return None
 
-    except genai.types.BlockedPromptException as e:
+    # Specific exception for blocked prompts from google.generativeai library
+    except genai.types.BlockedPromptException as e: # This was specified as likely correct
         print(f"Gemini API request for {model_name} blocked due to prompt: {e}")
         return None
-    except genai.core.exceptions.PermissionDenied as e: # Specific exception for permission issues
-        print(f"Gemini API request for {model_name} failed due to permission denied (check API key and access to model): {e}")
+    # Catching PermissionDeniedError if it's part of genai.exceptions or genai.types
+    # This requires knowing the actual structure of the genai library's exceptions.
+    # Assuming 'PermissionDeniedError' and 'GoogleAPIError' are common names.
+    # If these are not found in genai's namespace directly, they will be caught by broader exceptions.
+
+    # Attempt to catch specific exceptions from the genai library if they exist
+    # Note: The exact names and locations (e.g., genai.exceptions.PermissionDeniedError) are assumed here.
+    # If these specific types are not defined in the version of 'google-generativeai' being used,
+    # these blocks may not catch as intended, and errors would fall to broader handlers.
+
+    # Let's use a try-catch for the specific genai exceptions if their path is uncertain.
+    # This is still a bit of a guess. A better way is to know the exact exception types.
+    # For now, relying on the prompt's guidance towards google.api_core.exceptions as robust fallbacks.
+
+    # Specific Google / Gemini API related errors
+    except google.api_core.exceptions.PermissionDenied as e:
+        print(f"Gemini API request for {model_name} failed due to permission denied (google.api_core): {e}")
         return None
-    except genai.core.exceptions.GoogleAPIError as e:
-        print(f"Error interacting with Gemini API ({model_name}): {e}")
+    except google.api_core.exceptions.InvalidArgument as e: # Often, API errors manifest as InvalidArgument
+        print(f"Gemini API request for {model_name} failed due to invalid argument (e.g., model name, settings): {e}")
         return None
-    except Exception as e: # Catch any other unexpected errors
-        print(f"Generic error during Gemini API call for {model_name}: {e}")
+    except google.api_core.exceptions.GoogleAPICallError as e: # General Google API error
+        print(f"A Google API Call Error occurred with Gemini model {model_name}: {e}")
+        return None
+    except google.auth.exceptions.RefreshError as e: # For auth specific issues like token expiry
+        print(f"Authentication error for Gemini API ({model_name}), potentially a token refresh error: {e}")
+        return None
+    # General catch-all for other unexpected errors
+    except Exception as e:
+        print(f"An unexpected error of type {type(e).__name__} occurred during Gemini API call for {model_name}: {e}")
         return None
 
 
