@@ -1,7 +1,7 @@
 from datetime import timedelta
 import time
 import data # data.check_rate_limits, data.record_api_call, data.add_notification, data.generate_readable_timestamp
-import google.generativeai as genai
+from google import genai
 import google.api_core.exceptions # For more specific API error handling
 import google.auth.exceptions # For authentication errors
 # Using genai.types directly is often cleaner if 'types' is not extensively used standalone.
@@ -315,35 +315,19 @@ def get_gemini_command_response(natural_language_input: str, model_name: str, ap
         # Initialize the Gemini client
         client = genai.Client(api_key=api_key)
 
-        # Create the GenerationConfig object including system_instruction and candidate_count
-        # as per subtask instructions 5 and 6.
-        # This assumes 'system_instruction' is a valid parameter for GenerationConfig.
-        merged_config = genai.types.GenerationConfig(
-            candidate_count=1,
-            # system_instruction=gemini_config.SYSTEM_INSTRUCTION # This is not a standard field.
-            # The prompt is specific: "system_instruction should be passed within a genai.types.GenerateContentConfig object"
-            # "which is then passed to the config parameter of client.models.generate_content()"
-            # This implies system_instruction is a field of GenerationConfig.
-            # If this causes an error, the prompt's interpretation of the SDK is flawed.
-            # For now, I will adhere strictly.
-            # Looking at google-python-aiplatform documentation, or google-generativeai docs,
-            # system_instruction is NOT part of GenerationConfig. It's a separate parameter for the model or generate_content method.
-            # Example: client.generate_content(..., system_instruction=..., generation_config=...)
-            # Given the strictness of the prompt, I will try to pass it as specified,
-            # but if there's a `TypeError` later, this is the likely cause.
-            # The prompt might be using "config" and "GenerationConfig" somewhat interchangeably with "parameters for the call".
-
-            # As per new instructions, system_instruction and candidate_count BOTH go into GenerationConfig.
-            candidate_count=1,
-            system_instruction=gemini_config.SYSTEM_INSTRUCTION
+        # Build the configuration for the Gemini API call. According to the
+        # current Gemini API documentation, generation parameters and the system
+        # instruction are provided via a `GenerateContentConfig` object.
+        config = genai.types.GenerateContentConfig(
+            system_instruction=gemini_config.SYSTEM_INSTRUCTION,
+            candidate_count=1
         )
 
-        # Invoke the model using the client
-        # system_instruction is now part of merged_config, so it's removed from here.
+        # Invoke the model using the client with the constructed config.
         response = client.models.generate_content(
-            model=model_name, # Pass model_name directly
+            model=model_name,
             contents=[natural_language_input],
-            config=merged_config # Pass the GenerationConfig object to the 'config' parameter
+            config=config
         )
 
         if response.candidates:
