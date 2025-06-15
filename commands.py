@@ -1,7 +1,7 @@
 from datetime import timedelta
 import time
 import data # data.check_rate_limits, data.record_api_call, data.add_notification, data.generate_readable_timestamp
-import google.generativeai as genai
+from google import genai
 # Using genai.types directly is often cleaner if 'types' is not extensively used standalone.
 import gemini_config
 
