@@ -1,9 +1,9 @@
 from datetime import timedelta
 import time
-import data # data.check_rate_limits, data.record_api_call, data.add_notification, data.generate_readable_timestamp
+import data  # data.check_rate_limits, data.record_api_call, data.add_notification, data.generate_readable_timestamp
 from google import genai
-import google.api_core.exceptions # For more specific API error handling
-import google.auth.exceptions # For authentication errors
+import google.api_core.exceptions  # For more specific API error handling
+import google.auth.exceptions  # For authentication errors
 # Using genai.types directly is often cleaner if 'types' is not extensively used standalone.
 # from google.generativeai import types # Original
 # google.generativeai.types.BlockedPromptException is referenced later via genai.types.BlockedPromptException.
@@ -215,44 +215,26 @@ def comment_listener_thread(project):
                         continue
                     first_word = command_parts[0].lower()
                     clean_word = first_word.lstrip("!")
-                    clean_word = first_word.lstrip("!")
                     # Updated list of known commands for direct processing
                     known_direct_commands = ["s", "sub", "can", "canall", "found", "add", "sendco"]
 
                     if clean_word in known_direct_commands:
                         print(f"Found direct command '{content}' from {author} (ID: {comment.id})")
-                        # command_parts already includes the command with '!' (e.g., ['!s', 'user', '10'])
-                        # or without '!' if lstrip removed it and it was just 's'.
-                        # process_comment_command expects '!command' as first part.
-                        # Ensure first part has '!' if it was stripped by clean_word logic.
-                        # Original command_parts[0] is like '!s' or 's'.
-                        # process_comment_command internally lstrips '!' again.
-                        # So, it's robust to either ['!s', 'user', '10'] or ['s', 'user', '10'] if first_word was 's'.
-                        # However, our clean_word logic means command_parts[0] might be just 's'.
-                        # Let's ensure process_comment_command receives it as it expects.
-                        # The original `command_parts` is `['!s', 'user', '10']`.
-                        # `process_comment_command` does `command_parts[0].lower().lstrip("!")`.
-                        # So, passing `command_parts` directly is correct.
                         process_comment_command(author, command_parts)
                         data.add_processed_comment(comment.id)
                     elif clean_word == "n":
-                        if len(command_parts) > 1: # e.g., ['!n', 'send', '10', 'to', 'user']
+                        if len(command_parts) > 1:  # e.g., ['!n', 'send', '10', 'to', 'user']
                             natural_input = " ".join(command_parts[1:])
                             print(f"Found natural language command '!n {natural_input}' from {author} (ID: {comment.id})")
                             process_natural_language_command(author, natural_input)
                             data.add_processed_comment(comment.id)
-                        else: # Malformed !n command, e.g., just ['!n']
+                        else:  # Malformed !n command, e.g., just ['!n']
                             ts = data.generate_readable_timestamp()
-                            # Ensure author's name is fixed for notification consistency
                             data.add_notification(data.fix_name(author), f"{ts} - Invalid !n command format. Use: !n [your natural language instruction].")
-                            data.add_processed_comment(comment.id) # Mark as processed to avoid retrying
+                            data.add_processed_comment(comment.id)  # Mark as processed to avoid retrying
                     else:
-                        # If it's not a known direct command and not '!n',
-                        # and it started with '!', it's an unknown command.
-                        # Otherwise, it's just a regular comment not intended for the bot.
                         if first_word.startswith("!"):
-                             print(f"Unknown command '{content}' from {author} (ID: {comment.id}). Marked as processed.")
-                        # Always mark as processed to prevent re-evaluation in next cycle.
+                            print(f"Unknown command '{content}' from {author} (ID: {comment.id}). Marked as processed.")
                         data.add_processed_comment(comment.id)
         except Exception as e:
             print(f"Error in comment listener: {e}")
@@ -312,22 +294,18 @@ def get_gemini_command_response(natural_language_input: str, model_name: str, ap
         The command string from Gemini, or None if an error occurs or no command is found.
     """
     try:
-        # Initialize the Gemini client
-        client = genai.Client(api_key=api_key)
-
-        # Build the configuration for the Gemini API call. According to the
-        # current Gemini API documentation, generation parameters and the system
-        # instruction are provided via a `GenerateContentConfig` object.
-        config = genai.types.GenerateContentConfig(
-            system_instruction=gemini_config.SYSTEM_INSTRUCTION,
-            candidate_count=1
+        # Create the GenerateContentConfig object including system_instruction,
+        # following the official Gemini API documentation.
+        request_config = genai.types.GenerateContentConfig(
+            system_instruction=gemini_config.SYSTEM_INSTRUCTION
         )
 
-        # Invoke the model using the client with the constructed config.
+        # Invoke the model using the client with the configuration
+        client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model=model_name,
             contents=[natural_language_input],
-            config=config
+            config=request_config
         )
 
         if response.candidates:
@@ -339,12 +317,12 @@ def get_gemini_command_response(natural_language_input: str, model_name: str, ap
                 else:
                     finish_reason_enum = genai.types.Candidate.FinishReason
                     if candidate.finish_reason != finish_reason_enum.STOP:
-                         print(f"Warning: Gemini response candidate for {model_name} finished due to: {candidate.finish_reason.name}")
+                        print(f"Warning: Gemini response candidate for {model_name} finished due to: {candidate.finish_reason.name}")
                     else:
-                         print(f"Warning: Gemini response candidate for {model_name} has part but no text, finish_reason: {candidate.finish_reason.name}.")
+                        print(f"Warning: Gemini response candidate for {model_name} has part but no text, finish_reason: {candidate.finish_reason.name}.")
                     return None
-            elif hasattr(response, 'text') and response.text: # Fallback
-                 return response.text.strip()
+            elif hasattr(response, 'text') and response.text:  # Fallback
+                return response.text.strip()
             else:
                 print(f"Warning: Gemini response for {model_name} has candidates but no parsable text content.")
                 return None
@@ -355,38 +333,21 @@ def get_gemini_command_response(natural_language_input: str, model_name: str, ap
                 print(f"Warning: Gemini response for {model_name} has no candidates.")
             return None
 
-    # Specific exception for blocked prompts from google.generativeai library
-    except genai.types.BlockedPromptException as e: # This was specified as likely correct
+    except genai.types.BlockedPromptException as e:
         print(f"Gemini API request for {model_name} blocked due to prompt: {e}")
         return None
-    # Catching PermissionDeniedError if it's part of genai.exceptions or genai.types
-    # This requires knowing the actual structure of the genai library's exceptions.
-    # Assuming 'PermissionDeniedError' and 'GoogleAPIError' are common names.
-    # If these are not found in genai's namespace directly, they will be caught by broader exceptions.
-
-    # Attempt to catch specific exceptions from the genai library if they exist
-    # Note: The exact names and locations (e.g., genai.exceptions.PermissionDeniedError) are assumed here.
-    # If these specific types are not defined in the version of 'google-generativeai' being used,
-    # these blocks may not catch as intended, and errors would fall to broader handlers.
-
-    # Let's use a try-catch for the specific genai exceptions if their path is uncertain.
-    # This is still a bit of a guess. A better way is to know the exact exception types.
-    # For now, relying on the prompt's guidance towards google.api_core.exceptions as robust fallbacks.
-
-    # Specific Google / Gemini API related errors
     except google.api_core.exceptions.PermissionDenied as e:
         print(f"Gemini API request for {model_name} failed due to permission denied (google.api_core): {e}")
         return None
-    except google.api_core.exceptions.InvalidArgument as e: # Often, API errors manifest as InvalidArgument
+    except google.api_core.exceptions.InvalidArgument as e:
         print(f"Gemini API request for {model_name} failed due to invalid argument (e.g., model name, settings): {e}")
         return None
-    except google.api_core.exceptions.GoogleAPICallError as e: # General Google API error
+    except google.api_core.exceptions.GoogleAPICallError as e:
         print(f"A Google API Call Error occurred with Gemini model {model_name}: {e}")
         return None
-    except google.auth.exceptions.RefreshError as e: # For auth specific issues like token expiry
+    except google.auth.exceptions.RefreshError as e:
         print(f"Authentication error for Gemini API ({model_name}), potentially a token refresh error: {e}")
         return None
-    # General catch-all for other unexpected errors
     except Exception as e:
         print(f"An unexpected error of type {type(e).__name__} occurred during Gemini API call for {model_name}: {e}")
         return None
@@ -396,7 +357,7 @@ def process_natural_language_command(comment_author: str, natural_language_input
     """
     Processes a natural language command by trying available Gemini models.
     """
-    author_name_fixed = data.fix_name(comment_author) # Use fixed name for rate limiting and notifications
+    author_name_fixed = data.fix_name(comment_author)  # Use fixed name for rate limiting and notifications
 
     for model_config in gemini_config.get_model_configs():
         model_name = model_config['name']
@@ -405,7 +366,6 @@ def process_natural_language_command(comment_author: str, natural_language_input
 
         if can_use_model:
             print(f"Attempting to use model: {model_name} for user {author_name_fixed} for input: '{natural_language_input}'")
-            # Ensure GEMINI_API_KEY is correctly passed; it's defined in gemini_config
             gemini_response_text = get_gemini_command_response(natural_language_input, model_name, gemini_config.GEMINI_API_KEY)
 
             if gemini_response_text is not None and gemini_response_text.strip():
@@ -416,7 +376,7 @@ def process_natural_language_command(comment_author: str, natural_language_input
                     ts = data.generate_readable_timestamp()
                     data.add_notification(author_name_fixed, f"{ts} - Your natural language command was processed by {model_name} but resulted in no specific action.")
                     print(f"User {author_name_fixed}, model {model_name}: NL command processed, no action from AI output '{gemini_response_text}'.")
-                    return # Successfully processed by AI, but no command output.
+                    return
 
                 executed_at_least_one = False
                 known_commands = ["s", "sub", "can", "canall", "found", "add", "sendco"]
@@ -425,44 +385,34 @@ def process_natural_language_command(comment_author: str, natural_language_input
                     cmd_line = cmd_line.strip()
                     if cmd_line:
                         gemini_command_parts = cmd_line.split(" ")
-                        if not gemini_command_parts: continue
+                        if not gemini_command_parts:
+                            continue
 
                         actual_command_keyword = gemini_command_parts[0].lower()
 
                         if actual_command_keyword in known_commands:
                             print(f"User {author_name_fixed}, model {model_name}: Executing AI generated command: !{actual_command_keyword} {' '.join(gemini_command_parts[1:])}")
-                            # process_comment_command expects the author name and the full command parts list
-                            # where the first part is the command including "!"
                             process_comment_command(comment_author, [f"!{actual_command_keyword}"] + gemini_command_parts[1:])
                             executed_at_least_one = True
                         else:
                             ts = data.generate_readable_timestamp()
                             error_msg = f"{ts} - Skipped unknown command from AI ({model_name}): '{cmd_line}'."
-                            print(error_msg) # Also print to server log for debugging
+                            print(error_msg)
                             data.add_notification(author_name_fixed, error_msg)
 
                 if executed_at_least_one:
-                    # Optionally, notify user that command from AI was run
-                    # ts = data.generate_readable_timestamp()
-                    # data.add_notification(author_name_fixed, f"{ts} - Your natural language command was successfully executed by {model_name}.")
-                    return # Stop trying other models if commands were processed
+                    return
                 elif not executed_at_least_one and potential_commands and potential_commands[0].strip():
-                    # AI returned something, but it wasn't a runnable command (e.g. just text, or unknown command)
                     ts = data.generate_readable_timestamp()
                     msg = f"{ts} - AI ({model_name}) processed your request but didn't return a recognized command. AI Output: '{gemini_response_text}'"
                     data.add_notification(author_name_fixed, msg)
                     print(f"User {author_name_fixed}, model {model_name}: AI output not a recognized command: '{gemini_response_text}'.")
-                    return # Handled by this model, even if not runnable.
-            else: # Gemini returned None or empty string
+                    return
+            else:
                 print(f"Model {model_name} returned no valid response or an empty response for user {author_name_fixed}. Response: '{gemini_response_text}'")
-                # Optionally notify user model failed, or just try next model silently
-                # ts = data.generate_readable_timestamp()
-                # data.add_notification(author_name_fixed, f"{ts} - Model {model_name} could not process your request at this time.")
-                # Continue to the next model (fallback)
         else:
             print(f"Rate limit check failed for user {author_name_fixed}, model {model_name}.")
 
-    # If loop finishes, all models failed or were rate-limited
     ts = data.generate_readable_timestamp()
     final_msg = f"{ts} - Sorry, your natural language command could not be processed at this time. All models are currently unavailable or rate-limited."
     data.add_notification(author_name_fixed, final_msg)
