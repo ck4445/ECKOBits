@@ -252,7 +252,7 @@ def comment_listener_thread(project):
                         data.add_processed_comment(comment.id)
         except Exception as e:
             print(f"Error in comment listener: {e}")
-        time.sleep(1)
+        time.sleep(15)
 
 
 def subscription_processor_thread():
