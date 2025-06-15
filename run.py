@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 
-DEFAULT_REPO_URL = "https://github.com/ck4445/ECKOBits.git"
+DEFAULT_REPO_URL = "https://github.com/ck4445/ECKoins.git"
 
 def run_command(cmd, cwd=None):
     """Run a command and exit on failure."""
@@ -17,7 +17,7 @@ def ensure_repo(script_dir):
     if os.path.isdir(os.path.join(script_dir, '.git')):
         repo_dir = script_dir
     else:
-        repo_dir = os.path.join(script_dir, 'ECKOBits')
+        repo_dir = os.path.join(script_dir, 'ECKoins')
         if not os.path.isdir(repo_dir):
             repo_url = os.environ.get('REPO_URL', DEFAULT_REPO_URL)
             run_command(['git', 'clone', repo_url, repo_dir])
